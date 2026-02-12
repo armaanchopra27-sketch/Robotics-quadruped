@@ -1,0 +1,187 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            t4iv9a2zhhm3952pfnbxqupcnmsb8uq8:
+                codePath: src\go2_train.py
+                codePathLocal: src\go2_train.py
+                cpu_count: 8
+                cpu_count_logical: 12
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "506582790144"
+                        used: "498376175616"
+                email: armaanchopra27@gmail.com
+                executable: C:\armaan_stuff\Coding\Brain_argo\.venv\Scripts\python.exe
+                git:
+                    commit: 99a7a6488f658982cb885099f4955f3e3e60885b
+                    remote: https://github.com/Argo-Robot/quadrupeds_locomotion.git
+                gpu: NVIDIA GeForce RTX 4050 Laptop GPU
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 2560
+                      memoryTotal: "6439305216"
+                      name: NVIDIA GeForce RTX 4050 Laptop GPU
+                      uuid: GPU-6874d179-6a95-9331-2f12-44e9d2e88d1f
+                host: LAPTOP-26DMNMNR
+                memory:
+                    total: "16873545728"
+                os: Windows-10-10.0.26200-SP0
+                program: C:\armaan_stuff\Coding\Brain_argo\quadrupeds_locomotion\src\go2_train.py
+                python: CPython 3.11.0
+                root: C:\armaan_stuff\Coding\Brain_argo\quadrupeds_locomotion
+                startedAt: "2026-02-12T02:09:03.087124Z"
+                writerId: t4iv9a2zhhm3952pfnbxqupcnmsb8uq8
+        m: []
+        python_version: 3.11.0
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 13
+                - 16
+            "4": 3.11.0
+            "5": 0.24.2
+            "8":
+                - 3
+            "12": 0.24.2
+            "13": windows-amd64
+command_cfg:
+    value:
+        ang_vel_range:
+            - -0.6
+            - 0.6
+        height_range:
+            - 0.2
+            - 0.4
+        jump_range:
+            - 0.5
+            - 1.5
+        lin_vel_x_range:
+            - -1
+            - 2
+        lin_vel_y_range:
+            - -0.5
+            - 0.5
+        num_commands: 5
+device:
+    value: cuda:0
+env_cfg:
+    value:
+        action_scale: 0.25
+        base_init_pos:
+            - 0
+            - 0
+            - 0.42
+        base_init_quat:
+            - 1
+            - 0
+            - 0
+            - 0
+        clip_actions: 100
+        default_joint_angles:
+            FL_calf_joint: -1.5
+            FL_hip_joint: 0
+            FL_thigh_joint: 0.8
+            FR_calf_joint: -1.5
+            FR_hip_joint: 0
+            FR_thigh_joint: 0.8
+            RL_calf_joint: -1.5
+            RL_hip_joint: 0
+            RL_thigh_joint: 1
+            RR_calf_joint: -1.5
+            RR_hip_joint: 0
+            RR_thigh_joint: 1
+        dof_names:
+            - FR_hip_joint
+            - FR_thigh_joint
+            - FR_calf_joint
+            - FL_hip_joint
+            - FL_thigh_joint
+            - FL_calf_joint
+            - RR_hip_joint
+            - RR_thigh_joint
+            - RR_calf_joint
+            - RL_hip_joint
+            - RL_thigh_joint
+            - RL_calf_joint
+        episode_length_s: 20
+        kd: 0.5
+        kp: 20
+        num_actions: 12
+        resampling_time_s: 4
+        simulate_action_latency: true
+        termination_if_pitch_greater_than: 10
+        termination_if_roll_greater_than: 10
+max_iterations:
+    value: 10000
+num_envs:
+    value: 4096
+obs_cfg:
+    value:
+        num_obs: 48
+        obs_scales:
+            ang_vel: 0.25
+            dof_pos: 1
+            dof_vel: 0.05
+            lin_vel: 2
+resume_from_checkpoint:
+    value: false
+reward_cfg:
+    value:
+        base_height_target: 0.3
+        jump_reward_steps: 50
+        reward_scales:
+            death_penalty: -20
+            energy_smoothness: -0.1
+            forward_motion: 1.5
+            height_consistency: 2
+            sine_gait: 3
+            upright_posture: 1
+train_cfg:
+    value:
+        algorithm:
+            clip_param: 0.2
+            desired_kl: 0.01
+            entropy_coef: 0.01
+            gamma: 0.99
+            lam: 0.95
+            learning_rate: 0.001
+            max_grad_norm: 1
+            num_learning_epochs: 5
+            num_mini_batches: 4
+            schedule: adaptive
+            use_clipped_value_loss: true
+            value_loss_coef: 1
+        policy:
+            activation: elu
+            actor_hidden_dims:
+                - 512
+                - 256
+                - 128
+            critic_hidden_dims:
+                - 512
+                - 256
+                - 128
+            init_noise_std: 1
+        runner:
+            algorithm_class_name: PPO
+            checkpoint: -1
+            experiment_name: go2-walking
+            load_run: -1
+            log_interval: 1
+            max_iterations: 10000
+            num_steps_per_env: 24
+            policy_class_name: ActorCritic
+            record_interval: -1
+            resume: false
+            resume_path: null
+            run_name: ""
+            runner_class_name: runner_class_name
+            save_interval: 100
+        runner_class_name: OnPolicyRunner
+        seed: 1

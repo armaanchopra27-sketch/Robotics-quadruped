@@ -1,0 +1,40 @@
+{
+  "os": "Windows-10-10.0.26200-SP0",
+  "python": "CPython 3.11.0",
+  "startedAt": "2026-02-12T02:09:24.510452Z",
+  "program": "C:\\armaan_stuff\\Coding\\Brain_argo\\quadrupeds_locomotion\\src\\go2_train.py",
+  "codePath": "src\\go2_train.py",
+  "codePathLocal": "src\\go2_train.py",
+  "git": {
+    "remote": "https://github.com/Argo-Robot/quadrupeds_locomotion.git",
+    "commit": "99a7a6488f658982cb885099f4955f3e3e60885b"
+  },
+  "email": "armaanchopra27@gmail.com",
+  "root": "C:\\armaan_stuff\\Coding\\Brain_argo\\quadrupeds_locomotion",
+  "host": "LAPTOP-26DMNMNR",
+  "executable": "C:\\armaan_stuff\\Coding\\Brain_argo\\.venv\\Scripts\\python.exe",
+  "cpu_count": 8,
+  "cpu_count_logical": 12,
+  "gpu": "NVIDIA GeForce RTX 4050 Laptop GPU",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "506582790144",
+      "used": "504304967680"
+    }
+  },
+  "memory": {
+    "total": "16873545728"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+      "memoryTotal": "6439305216",
+      "cudaCores": 2560,
+      "architecture": "Ada",
+      "uuid": "GPU-6874d179-6a95-9331-2f12-44e9d2e88d1f"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "zhq73kc1h5o1mu4t66ce473f3bsmcns7"
+}
