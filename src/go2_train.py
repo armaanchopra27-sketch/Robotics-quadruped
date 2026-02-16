@@ -52,7 +52,7 @@ def load_checkpoint(runner, checkpoint_path):
     runner.current_learning_iteration = checkpoint['iter']
     
     print(f"   ✓ Loaded iteration: {checkpoint['iter']}")
-    if 'infos' in checkpoint:
+    if 'infos' in checkpoint and checkpoint['infos'] is not None:
         if 'tot_time' in checkpoint['infos']:
             print(f"   ✓ Total time: {checkpoint['infos']['tot_time']:.1f}s")
         if 'mean_reward' in checkpoint['infos']:
@@ -128,7 +128,7 @@ def get_train_cfg(exp_name, max_iterations):
             "resume_path": None,
             "run_name": "",
             "runner_class_name": "runner_class_name",
-            "save_interval": 1000,
+            "save_interval": 100,
         },
         "runner_class_name": "OnPolicyRunner",
         "seed": 1,
@@ -179,7 +179,7 @@ def get_cfgs():
         "base_init_pos": [0.0, 0.0, 0.42],
         "base_init_quat": [1.0, 0.0, 0.0, 0.0],
         "episode_length_s": 20.0,
-        "resampling_time_s": 4.0,
+        "resampling_time_s": 5.0,  # Commands change every 5 seconds
         "action_scale": 0.25,
         "simulate_action_latency": True,
         "clip_actions": 100.0,
@@ -197,12 +197,14 @@ def get_cfgs():
         "base_height_target": 0.3,
         "jump_reward_steps": 50,
         "reward_scales": {
-            # Core 6 rewards only
-            "forward_motion": 1.5,          # +1.5 × v_x
-            "height_consistency": 2.0,       # +2.0 × exp(-5(z-0.3)²)
+            # Core 6 rewards (forward_motion disabled but kept for checkpoint compatibility)
+            "forward_motion": 0.0,           # DISABLED - was conflicting with command_tracking
+            "command_tracking": 3.0,         # +3.0 × exp(-tracking_error)
+            "height_consistency": 2.0,       # +2.0 × exp(-10(z-0.3)²) - Original scale, stricter criteria
             "sine_gait": 3.0,                # +3.0 × Σexp(-(pos-sine)²)
             "upright_posture": 1.0,          # +1.0 × cos(pitch)×cos(roll)
-            "energy_smoothness": -0.1,       # -0.1 × Σ(Δaction)²
+            "energy_smoothness": 0.0,        # DISABLED - no smoothness penalty
+            "constant_velocity": 2.0,        # +2.0 × exp(-2×speed_error) - Maintain consistent speed
             "death_penalty": -20.0,          # -20.0 on termination
         },
     }
@@ -225,9 +227,10 @@ def run_visualizer(runner, env_cfg, obs_cfg, reward_cfg, command_cfg, device, it
     """Run visualization with current policy for 5 episodes (~5000 steps)"""
     print(f"\n{'='*70}")
     print(f"🎬 Running visualizer at iteration {iteration} (5 episodes)")
+    print(f"   Mode: DUAL COMMANDS (Direction 0-360° + Speed)")
     print(f"{'='*70}\n")
     
-    # Create a single environment for visualization
+    # Create a single environment for visualization with camera and lidar
     vis_env = Go2Env(
         num_envs=1,
         env_cfg=env_cfg,
@@ -236,6 +239,8 @@ def run_visualizer(runner, env_cfg, obs_cfg, reward_cfg, command_cfg, device, it
         command_cfg=command_cfg,
         device=device,
         show_viewer=True,
+        add_camera=True,
+        add_lidar=True,
     )
     
     # Set viewer camera
@@ -253,9 +258,11 @@ def run_visualizer(runner, env_cfg, obs_cfg, reward_cfg, command_cfg, device, it
             actions = runner.alg.actor_critic.act_inference(obs.to(device))
             obs, _, _, dones, _ = vis_env.step(actions, is_train=False)
             steps += 1
+            
             if dones[0]:
                 episodes_completed += 1
-                print(f"  Episode {episodes_completed}/5 complete (step {steps})")
+                cmd = vis_env.current_command_text[0]
+                print(f"  Episode {episodes_completed}/5 complete (step {steps}) - Last Command: {cmd}")
             
     runner.alg.actor_critic.train()  # Set back to train mode
     print(f"\n✓ Visualization complete - {episodes_completed} episodes, {steps} steps\n")
@@ -272,6 +279,8 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="go2_locomotion", help="W&B project name")
     parser.add_argument("--latest", action="store_true", help="Load latest checkpoint")
     parser.add_argument("--checkpoint", type=int, default=None, help="Load specific checkpoint iteration")
+    parser.add_argument("--load_from", type=str, default=None, help="Experiment name to load checkpoint from (default: same as --exp_name)")
+    parser.add_argument("--dual_commands", action="store_true", help="Enable dual command training (movement + rotation + degrees)")
     args = parser.parse_args()
     
     # Map to internal variable names
@@ -323,6 +332,7 @@ def main():
                 "max_iterations": args.max_iterations,
                 "device": args.device,
                 "resume_from_checkpoint": args.latest or (args.checkpoint is not None),
+                "dual_commands": args.dual_commands,
             }
         )
         print(f"✓ Weights & Biases logging enabled")
@@ -364,15 +374,18 @@ def main():
     # Load checkpoint if requested
     start_iteration = 0
     if args.latest or args.checkpoint is not None:
+        # Determine which directory to load checkpoint from
+        load_dir = log_dir if args.load_from is None else os.path.join("logs", args.load_from)
+        
         if args.latest:
-            ckpt_path, start_iteration = find_latest_checkpoint(log_dir)
+            ckpt_path, start_iteration = find_latest_checkpoint(load_dir)
             if ckpt_path is None:
-                print(f"⚠️  No checkpoints found in {log_dir}, starting from scratch")
+                print(f"⚠️  No checkpoints found in {load_dir}, starting from scratch")
                 start_iteration = 0
             else:
                 start_iteration = load_checkpoint(runner, ckpt_path)
         elif args.checkpoint is not None:
-            ckpt_path = os.path.join(log_dir, f"model_{args.checkpoint}.pt")
+            ckpt_path = os.path.join(load_dir, f"model_{args.checkpoint}.pt")
             if not os.path.exists(ckpt_path):
                 print(f"❌ Checkpoint not found: {ckpt_path}")
                 return
@@ -400,14 +413,16 @@ def main():
                     "train/total_reward": statistics.mean(locs['rewbuffer']),
                 }
                 
-                # Only log the 6 specific reward components
+                # Log all reward components
                 if locs.get('ep_infos'):
                     wanted_rewards = [
-                        'forward_motion',      # +1.5 × v_x
-                        'height_consistency',  # +2.0 × exp(-5(z-0.3)²)
+                        'forward_motion',      # Disabled (0.0 weight)
+                        'command_tracking',    # +3.0 × exp(-tracking_error)
+                        'height_consistency',  # +2.0 × exp(-10(z-0.3)²)
                         'sine_gait',          # +3.0 × Σexp(-(pos-sine)²)
                         'upright_posture',    # +1.0 × cos(pitch)×cos(roll)
-                        'energy_smoothness',  # -0.1 × Σ(Δaction)²
+                        'energy_smoothness',  # -0.5 × Σ(Δaction)²
+                        'constant_velocity',  # +2.0 × exp(-2×speed_error)
                         'death_penalty',      # -20.0 on termination
                     ]
                     

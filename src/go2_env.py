@@ -19,7 +19,7 @@ def gs_additive(base, increment):
 
 
 class Go2Env:
-    def __init__(self, num_envs, env_cfg, obs_cfg, reward_cfg, command_cfg, show_viewer=False, device="cuda", add_camera = False):
+    def __init__(self, num_envs, env_cfg, obs_cfg, reward_cfg, command_cfg, show_viewer=False, device="cuda", add_camera=False, add_lidar=False, use_dual_commands=True):
         self.device = torch.device(device)
 
         self.num_envs = num_envs
@@ -27,6 +27,14 @@ class Go2Env:
         self.num_privileged_obs = None
         self.num_actions = env_cfg["num_actions"]
         self.num_commands = command_cfg["num_commands"]
+        
+        # Sensor flags (disabled by default for locomotion, enabled for vision tasks)
+        self.add_camera = add_camera
+        self.add_lidar = add_lidar
+        self.show_viewer = show_viewer
+        
+        # Always use dual command mode
+        self.use_dual_commands = True
 
         self.simulate_action_latency = True  # there is a 1 step latency on real robot
         self.dt = 0.02  # control frequency on real robot is 50hz
@@ -74,18 +82,25 @@ class Go2Env:
             ),
         )
         
-        # self.cam_0 : gs.Camera = None
+        # Add camera sensor
+        self.cam_0 = None
         if add_camera:
             self.cam_0 = self.scene.add_camera(
-                res=(1920, 1080),
-                pos=(2.5, 0.5, 3.5),
-                lookat=(0, 0, 0.5),
-                fov=40,
-                GUI=True,
+                res=(160, 120),  # Reduced resolution for 6GB VRAM
+                pos=(0.3, 0.0, 0.1),  # Mount on robot front
+                lookat=(1.0, 0.0, 0.0),
+                fov=90,
+                GUI=show_viewer,
             )
 
         # build
         self.scene.build(n_envs=num_envs, env_spacing=(1.0, 1.0))
+        
+        # Initialize lidar after scene build
+        if add_lidar:
+            self.lidar_num_rays = 16
+            self.lidar_range = 10.0
+            self.lidar_data = torch.zeros((self.num_envs, self.lidar_num_rays), device=self.device, dtype=gs.tc_float)  # type: ignore
 
         # names to indices
         self.motor_dofs = [self.robot.get_joint(name).dof_idx_local for name in self.env_cfg["dof_names"]]
@@ -134,25 +149,148 @@ class Go2Env:
         self.jump_toggled_buf = torch.zeros((self.num_envs,), device=self.device)
         self.jump_target_height = torch.zeros((self.num_envs,), device=self.device)
         
+        # Dual command system: Direction (0-360°) + Speed (m/s)
+        self.current_direction = torch.zeros((self.num_envs,), device=self.device)  # degrees
+        self.current_speed = torch.zeros((self.num_envs,), device=self.device)  # m/s
+        self.current_command_text = ["0° @ 0.0m/s"] * self.num_envs
+        
         self.extras = dict()  # extra information for logging
+        
+        # Initialize dual commands for all environments
+        all_envs = torch.arange(self.num_envs, device=self.device)
+        self._sample_dual_commands(all_envs)
 
-    def _resample_commands(self, envs_idx):
-        # self.commands[envs_idx, 0] = gs_rand_float(*self.command_cfg["lin_vel_x_range"], (len(envs_idx),), self.device)
-        # self.commands[envs_idx, 1] = gs_rand_float(*self.command_cfg["lin_vel_y_range"], (len(envs_idx),), self.device)
-        # self.commands[envs_idx, 2] = gs_rand_float(*self.command_cfg["ang_vel_range"], (len(envs_idx),), self.device)
-        # self.commands[envs_idx, 0] =  gs_additive(self.last_actions[envs_idx, 0], self.command_cfg["lin_vel_x_range"][0] + (self.command_cfg["lin_vel_x_range"][1] - self.command_cfg["lin_vel_x_range"][0]) * torch.sin(2 * math.pi * self.episode_length_buf[envs_idx] / 300))
-        self.commands[envs_idx, 0] =  gs_rand_gaussian(self.last_actions[envs_idx, 0], *self.command_cfg["lin_vel_x_range"],  2.0, (len(envs_idx),), self.device)  # type: ignore
-        self.commands[envs_idx, 1] =  gs_rand_gaussian(self.last_actions[envs_idx, 1], *self.command_cfg["lin_vel_y_range"],  2.0, (len(envs_idx),), self.device)  # type: ignore
-        self.commands[envs_idx, 2] =  gs_rand_gaussian(self.last_actions[envs_idx, 2], *self.command_cfg["ang_vel_range"],  2.0, (len(envs_idx),), self.device)  # type: ignore
-        self.commands[envs_idx, 3] =  gs_rand_gaussian(self.last_actions[envs_idx, 3], *self.command_cfg["height_range"],  0.5,(len(envs_idx),), self.device)  # type: ignore
-        self.commands[envs_idx, 4] = 0.0
+    def _draw_command_arrow(self, env_idx=0):
+        """Draw an arrow from origin showing commanded direction and speed"""
+        if not self.show_viewer or env_idx >= self.num_envs:
+            return
         
-        # scale lin_vel and ang_vel proportionally to the height difference between the target and default height
-        height_diff_scale = 0.5 + abs(self.commands[envs_idx, 3] - self.reward_cfg["base_height_target"])/ (self.command_cfg["height_range"][1] - self.reward_cfg["base_height_target"]) * 0.5
-        self.commands[envs_idx, 0] *= height_diff_scale
-        self.commands[envs_idx, 1] *= height_diff_scale
-        self.commands[envs_idx, 2] *= height_diff_scale
+        import math
         
+        # Get commanded direction and speed
+        direction = self.current_direction[env_idx].item()
+        speed = self.current_speed[env_idx].item()
+        
+        # Convert direction to radians (0° = forward/+X, 90° = right/+Y)
+        direction_rad = direction * (math.pi / 180.0)
+        
+        # Calculate direction vector (length = speed)
+        vec_x = speed * math.cos(direction_rad)
+        vec_y = speed * math.sin(direction_rad)
+        vec_z = 0.0
+        
+        # Draw arrow from origin (0, 0, 0.1) showing commanded direction and speed
+        # Arrow length represents commanded speed directly
+        start_pos = [0.0, 0.0, 0.1]
+        direction_vec = [vec_x, vec_y, vec_z]
+        
+        # Use Genesis scene debug drawing API
+        thickness = 0.02 + speed * 0.01
+        self.scene.draw_debug_arrow(
+            pos=start_pos,
+            vec=direction_vec,
+            radius=thickness,
+            color=(0.0, 1.0, 0.0, 0.8),  # Green with alpha
+        )
+
+    def _update_lidar(self):
+        """Simulate lidar with raycasts in a circular pattern"""
+        if not self.add_lidar:
+            return
+        
+        # Vectorized simulated lidar - all environments at once
+        # In a real implementation, you'd use raycasting against scene geometry
+        self.lidar_data[:, :] = self.lidar_range * (0.8 + 0.2 * torch.rand((self.num_envs, self.lidar_num_rays), device=self.device))
+    
+    def _sample_dual_commands(self, envs_idx):
+        """
+        Sample random dual commands for training.
+        
+        Commands:
+        - Direction: 0-360° (0°=forward, 90°=right, 180°=back, 270°=left)
+        - Speed: 0.3-1.5 m/s
+        """
+        import math
+        
+        for idx in envs_idx:
+            idx_val = int(idx.item() if torch.is_tensor(idx) else idx)
+            
+            # Sample direction (0-360 degrees)
+            # Bias toward forward directions (0°, 45°, 315°)
+            direction_sample = torch.rand(1, device=self.device).item()
+            if direction_sample < 0.5:  # 50% forward-ish
+                direction = torch.rand(1, device=self.device).item() * 90 - 45  # -45 to 45
+            elif direction_sample < 0.7:  # 20% right-ish
+                direction = torch.rand(1, device=self.device).item() * 90 + 45  # 45 to 135
+            elif direction_sample < 0.9:  # 20% left-ish  
+                direction = torch.rand(1, device=self.device).item() * 90 + 225  # 225 to 315
+            else:  # 10% backward-ish
+                direction = torch.rand(1, device=self.device).item() * 90 + 135  # 135 to 225
+            
+            # Normalize to 0-360
+            direction = direction % 360
+            
+            # Sample speed (0.3-1.5 m/s, avoiding very slow speeds)
+            speed = 0.3 + torch.rand(1, device=self.device).item() * 1.2
+            
+            # Store for tracking
+            self.current_direction[idx_val] = direction
+            self.current_speed[idx_val] = speed
+            
+            # Convert to velocity components
+            direction_rad = direction * (math.pi / 180.0)
+            lin_vel_x = speed * math.cos(direction_rad)  # Forward/backward
+            lin_vel_y = speed * math.sin(direction_rad)  # Left/right
+            
+            # Set command [lin_vel_x, lin_vel_y, ang_vel, height, jump]
+            # Reset to 0, 0 on new command for smooth transition
+            self.commands[idx_val] = torch.tensor([0.0, 0.0, 0.0, 0.3, 0.0], device=self.device)
+            
+            # Update text for logging
+            self.current_command_text[idx_val] = f"{direction:.0f}° @ {speed:.2f}m/s"
+        
+        # Draw debug arrow for first environment when visualizing
+        if self.show_viewer and 0 in [int(i.item() if torch.is_tensor(i) else i) for i in envs_idx]:
+            self._draw_command_arrow(0)
+    
+    def set_dual_command(self, envs_idx, directions, speeds):
+        """
+        Set dual commands for specified environments.
+        
+        Args:
+            envs_idx: Environment indices
+            directions: Movement directions in degrees (0-360°, 0°=forward, 90°=right)
+            speeds: Movement speeds in m/s
+        """
+        import math
+        
+        for i, idx in enumerate(envs_idx):
+            idx_val = int(idx.item() if torch.is_tensor(idx) else idx)
+            
+            # Get direction and speed
+            direction = float(directions[i].item() if torch.is_tensor(directions[i]) else directions[i])
+            speed = float(speeds[i].item() if torch.is_tensor(speeds[i]) else speeds[i])
+            
+            # Store for tracking
+            self.current_direction[idx_val] = direction
+            self.current_speed[idx_val] = speed
+            
+            # Convert to velocity components
+            direction_rad = direction * (math.pi / 180.0)
+            lin_vel_x = speed * math.cos(direction_rad)  # Forward/backward
+            lin_vel_y = speed * math.sin(direction_rad)  # Left/right
+            
+            # Set command [lin_vel_x, lin_vel_y, ang_vel, height, jump]
+            # Reset to 0, 0 on new command for smooth transition
+            self.commands[idx_val] = torch.tensor([0.0, 0.0, 0.0, 0.3, 0.0], device=self.device)
+            
+            # Update text for logging
+            self.current_command_text[idx_val] = f"{direction:.0f}° @ {speed:.2f}m/s"
+        
+        # Draw debug arrow for first environment when visualizing
+        if self.show_viewer and 0 in [int(i.item() if torch.is_tensor(i) else i) for i in envs_idx]:
+            self._draw_command_arrow(0)
+    
     def _sample_commands(self, envs_idx):
         self.commands[envs_idx, 0] = gs_rand_float(*self.command_cfg["lin_vel_x_range"], (len(envs_idx),), self.device)  # type: ignore
         self.commands[envs_idx, 1] = gs_rand_float(*self.command_cfg["lin_vel_y_range"], (len(envs_idx),), self.device)  # type: ignore
@@ -189,22 +327,26 @@ class Go2Env:
         self.projected_gravity = transform_by_quat(self.global_gravity, inv_base_quat)
         self.dof_pos[:] = self.robot.get_dofs_position(self.motor_dofs)
         self.dof_vel[:] = self.robot.get_dofs_velocity(self.motor_dofs)
+        
+        # Update lidar sensor data
+        self._update_lidar()
+        
+        # Draw debug arrow showing commanded direction (visualization only, once per second to reduce spam)
+        if self.show_viewer and (self.episode_length_buf[0] % 50 == 0):
+            self._draw_command_arrow(0)
 
-        # resample commands, it is a variable that holds the indices of environments that need to be resampled or reset. 
+        # resample commands every 5 seconds
         envs_idx = (
             (self.episode_length_buf % int(self.env_cfg["resampling_time_s"] / self.dt) == 0)
             .nonzero(as_tuple=False)
             .flatten()
         )
         if is_train:
-            # self._resample_commands(all_envs_idx)
-            self._sample_commands(envs_idx)
-            # Idxs with probability of 5% to sample random commands
-            ranomd_idxs_1 = torch.randperm(self.num_envs)[:int(self.num_envs * 0.05)]
-            self._sample_commands(ranomd_idxs_1)
-            
-            random_idxs_2 = torch.randperm(self.num_envs)[:int(self.num_envs * 0.05)]
-            self._sample_jump_commands(random_idxs_2)
+            # Resample dual commands
+            self._sample_dual_commands(envs_idx)
+        else:
+            # For visualization, also resample dual commands
+            self._sample_dual_commands(envs_idx)
             
         # Update jump_toggled_buf if command 4 goes from 0 -> non-zero
         jump_cmd_now = (self.commands[:, 4] > 0.0).float()
@@ -300,7 +442,8 @@ class Go2Env:
             )
             self.episode_sums[key][envs_idx] = 0.0
 
-        self._sample_commands(envs_idx)
+        # Sample new dual command on reset
+        self._sample_dual_commands(envs_idx)
         
         # set target height command to default height
         self.commands[envs_idx, 3] = self.reward_cfg["base_height_target"]
@@ -315,12 +458,20 @@ class Go2Env:
     def _reward_forward_motion(self):
         # +1.5 × v_x (forward velocity)
         return self.base_lin_vel[:, 0]  # x-axis velocity
+    
+    def _reward_command_tracking(self):
+        # +3.0 × exp(-tracking_error)
+        # Reward following commanded velocities (lin_vel_x, lin_vel_y, ang_vel)
+        lin_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
+        ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
+        total_error = lin_vel_error + ang_vel_error
+        return torch.exp(-total_error)
 
     def _reward_height_consistency(self):
-        # +2.0 × exp(-5(z-0.3)²)
+        # +2.0 × exp(-10(z-0.3)²) - Stricter criteria for height deviation
         z = self.base_pos[:, 2]
         target = self.reward_cfg["base_height_target"]
-        return torch.exp(-5.0 * (z - target) ** 2)
+        return torch.exp(-10.0 * (z - target) ** 2)
 
     def _reward_sine_gait(self):
         # +3.0 × Σexp(-(pos-sine)²)
@@ -356,4 +507,23 @@ class Go2Env:
         # -20.0 on termination (this will be applied when robot falls)
         # Return 1.0 when terminated, 0.0 otherwise
         # The -20.0 scale will be applied via reward_scales
-        return self.reset_buf.float() 
+        return self.reset_buf.float()
+    
+    def _reward_constant_velocity(self):
+        # Reward maintaining consistent velocity magnitude
+        # Only applies when commanded speed is above minimum threshold
+        # Current velocity magnitude
+        current_speed = torch.norm(self.base_lin_vel[:, :2], dim=1)
+        # Commanded velocity magnitude
+        target_speed = torch.norm(self.commands[:, :2], dim=1)
+        
+        # Minimum speed threshold - only reward if target speed > 0.2 m/s
+        min_speed_threshold = 0.2
+        active_mask = (target_speed > min_speed_threshold).float()
+        
+        # Reward exponential decrease in speed error
+        speed_error = torch.abs(current_speed - target_speed)
+        reward = torch.exp(-2.0 * speed_error) 
+        
+        # Only apply reward when moving above threshold
+        return reward * active_mask 
