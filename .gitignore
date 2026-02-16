@@ -129,8 +129,8 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# Logs
-logs
+# Logs (allow checkpoint files)
+# logs - Commented out to track checkpoint models
 
 # Folders
 mujoco-3*
